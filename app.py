@@ -27,7 +27,7 @@ authenticator = stauth.Authenticate(
     cookie_expiry_days=1
 )
 
-authenticator.login('Login', location='sidebar')
+authenticator.login('Login', 'sidebar')
 
 if authenticator.authentication_status:
     name = authenticator.name
