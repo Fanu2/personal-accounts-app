@@ -1,0 +1,9 @@
+credentials:
+  usernames:
+    user1:
+      name: jasvir
+      password: "$2b$12$6rZEgET4hsHeyouvNjr/Hug1nSQx9jmumZSbSOsaxvxYW8WdylRH2"
+cookie:
+  name: auth_cookie
+  key: auth_signature
+  expiry_days: 1
