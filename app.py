@@ -14,7 +14,7 @@ st.set_page_config(page_title="Personal Accounts", layout="centered")
 credentials = {
     "usernames": {
         "user1": {
-            "name": "User",
+            "name": "jasvir",
             "password": "$2b$12$6rZEgET4hsHeyouvNjr/Hug1nSQx9jmumZSbSOsaxvxYW8WdylRH2"  # bcrypt hash
         }
     }
@@ -27,7 +27,7 @@ authenticator = stauth.Authenticate(
     cookie_expiry_days=1
 )
 
-authenticator.login('Login', 'main')
+authenticator.login('Login', location='sidebar')
 
 if authenticator.authentication_status:
     name = authenticator.name
