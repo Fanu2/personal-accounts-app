@@ -1,85 +1,125 @@
+# personal_accounts_app.py
 import streamlit as st
 import pandas as pd
+import os
+import datetime
 import altair as alt
+import io
 import streamlit_authenticator as stauth
 
-# --- USER AUTHENTICATION SETUP ---
+# ----- Page Config -----
+st.set_page_config(page_title="Personal Accounts", layout="centered")
 
-names = ['Jasvir']  # Your name(s)
-usernames = ['jasvir']  # Your username(s)
-
-# Paste your bcrypt-hashed passwords here
-passwords = [
-    '$2b$12$6rZEgET4hsHeyouvNjr/Hug1nSQx9jmumZSbSOsaxvxYW8WdylRH2'
-]
+# ----- Authentication -----
+credentials = {
+    "usernames": {
+        "user1": {
+            "name": "User",
+            "password": "$2b$12$6rZEgET4hsHeyouvNjr/Hug1nSQx9jmumZSbSOsaxvxYW8WdylRH2"  # bcrypt hash
+        }
+    }
+}
 
 authenticator = stauth.Authenticate(
-    names, usernames, passwords,
-    'my_cookie', 'my_signature_key',
+    credentials,
+    "auth_cookie",
+    "auth_signature",
     cookie_expiry_days=1
 )
 
-name, authentication_status, username = authenticator.login('Login', 'main')
+authenticator.login('Login', 'main')
 
-if authentication_status:
-    st.title(f"Welcome, {name}! 🎉")
-    
+if authenticator.authentication_status:
+    name = authenticator.name
+    username = authenticator.username
     authenticator.logout('Logout', 'sidebar')
 
-    # Initialize or load data
-    if 'accounts' not in st.session_state:
-        st.session_state.accounts = pd.DataFrame(columns=['Date', 'Account', 'Category', 'Amount', 'Description'])
+    # ----- Initialize File -----
+    DATA_FILE = "transactions.csv"
+    if not os.path.exists(DATA_FILE):
+        df_init = pd.DataFrame(columns=["Date", "Category", "Type", "Amount", "Notes"])
+        df_init.to_csv(DATA_FILE, index=False)
 
-    st.header("Add a new account entry")
+    # ----- Load Data -----
+    df = pd.read_csv(DATA_FILE, parse_dates=["Date"])
 
-    with st.form("account_form", clear_on_submit=True):
-        date = st.date_input("Date")
-        account = st.text_input("Account Name")
-        category = st.selectbox("Category", ['Income', 'Expense', 'Savings', 'Investment'])
+    # ----- Sidebar: Add Entry -----
+    st.sidebar.header("Add New Transaction")
+    with st.sidebar.form("entry_form", clear_on_submit=True):
+        date = st.date_input("Date", value=datetime.date.today())
+        category = st.text_input("Category (e.g. Groceries, Salary)")
+        t_type = st.selectbox("Type", ["Income", "Expense"])
         amount = st.number_input("Amount", min_value=0.0, format="%.2f")
-        description = st.text_area("Description (optional)")
-        submitted = st.form_submit_button("Add Entry")
+        notes = st.text_area("Notes", height=50)
+        submitted = st.form_submit_button("Add Transaction")
 
     if submitted:
-        new_entry = {
-            'Date': date,
-            'Account': account,
-            'Category': category,
-            'Amount': amount,
-            'Description': description
-        }
-        st.session_state.accounts = pd.concat([st.session_state.accounts, pd.DataFrame([new_entry])], ignore_index=True)
-        st.success("Entry added!")
+        new_entry = pd.DataFrame({
+            "Date": [date],
+            "Category": [category],
+            "Type": [t_type],
+            "Amount": [amount],
+            "Notes": [notes]
+        })
+        df = pd.concat([df, new_entry], ignore_index=True)
+        df.to_csv(DATA_FILE, index=False)
+        st.success("Transaction added successfully!")
 
-    # Display data
-    if not st.session_state.accounts.empty:
-        st.header("Your account entries")
-        st.dataframe(st.session_state.accounts)
+    # ----- Main Interface -----
+    st.title("💰 Personal Accounts Dashboard")
 
-        # Summary chart
-        st.header("Summary by Category")
-        summary = st.session_state.accounts.groupby(['Category']).Amount.sum().reset_index()
+    # Filter section
+    with st.expander("🔍 Filter by Date"):
+        start_date = st.date_input("Start Date", value=df["Date"].min() if not df.empty else datetime.date.today())
+        end_date = st.date_input("End Date", value=df["Date"].max() if not df.empty else datetime.date.today())
+        filtered_df = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
-        chart = alt.Chart(summary).mark_bar().encode(
-            x='Category',
-            y='Amount',
-            color='Category'
-        )
-        st.altair_chart(chart, use_container_width=True)
+    # ----- Summary -----
+    income = filtered_df[filtered_df["Type"] == "Income"]["Amount"].sum()
+    expense = filtered_df[filtered_df["Type"] == "Expense"]["Amount"].sum()
+    balance = income - expense
 
-        # CSV Export
-        csv = st.session_state.accounts.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Export as CSV",
-            data=csv,
-            file_name='accounts.csv',
-            mime='text/csv'
-        )
-    else:
-        st.info("No account entries yet. Add some above!")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Income", f"₹ {income:,.2f}")
+    col2.metric("Total Expense", f"₹ {expense:,.2f}")
+    col3.metric("Net Balance", f"₹ {balance:,.2f}", delta=f"{income - expense:,.2f}")
 
-elif authentication_status == False:
+    # ----- Chart -----
+    if not filtered_df.empty:
+        st.subheader("📊 Income vs Expense Over Time")
+        chart_data = filtered_df.copy()
+        chart_data["Month"] = chart_data["Date"].dt.to_period("M").astype(str)
+        chart_summary = chart_data.groupby(["Month", "Type"])["Amount"].sum().reset_index()
+
+        chart = alt.Chart(chart_summary).mark_bar().encode(
+            x="Month:N",
+            y="Amount:Q",
+            color="Type:N",
+            tooltip=["Month", "Type", "Amount"]
+        ).properties(width=700)
+
+        st.altair_chart(chart)
+
+        # ----- Budget Tracking -----
+        st.subheader("📅 Monthly Budget Tracker (₹50,000)")
+        monthly_expense = chart_data[chart_data["Type"] == "Expense"].groupby("Month")["Amount"].sum()
+        for month, spent in monthly_expense.items():
+            remaining = 50000 - spent
+            st.write(f"**{month}** - Spent: ₹{spent:,.0f} / Budget: ₹50,000 → Remaining: ₹{remaining:,.0f}")
+
+    # ----- View Table -----
+    st.subheader("📄 All Transactions")
+    st.dataframe(filtered_df.sort_values(by="Date", ascending=False), use_container_width=True)
+
+    # ----- Export CSV -----
+    st.download_button(
+        label="📅 Export Filtered Data to CSV",
+        data=filtered_df.to_csv(index=False).encode("utf-8"),
+        file_name="filtered_transactions.csv",
+        mime="text/csv"
+    )
+
+elif authenticator.authentication_status is False:
     st.error("Username/password is incorrect")
-
-else:
+elif authenticator.authentication_status is None:
     st.warning("Please enter your username and password")
