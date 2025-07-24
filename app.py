@@ -4,56 +4,70 @@ import pandas as pd
 import os
 import datetime
 import altair as alt
-import io
-import streamlit_authenticator as stauth
+import yaml
+from streamlit_authenticator import Authenticate
+from pathlib import Path
+
+# ----- Constants -----
+DATA_FILE = "transactions.csv"
+DEFAULT_BUDGET = 50000
+CATEGORIES = ["Groceries", "Salary", "Utilities", "Entertainment", "Travel", "Other"]
 
 # ----- Page Config -----
 st.set_page_config(page_title="Personal Accounts", layout="centered")
 
-# ----- Authentication -----
-credentials = {
-    "usernames": {
-        "user1": {
-            "name": "jasvir",
-            "password": "$2b$12$6rZEgET4hsHeyouvNjr/Hug1nSQx9jmumZSbSOsaxvxYW8WdylRH2"  # bcrypt hash
-        }
-    }
-}
+# ----- Load Configuration -----
+def load_config():
+    """Load configuration from YAML file."""
+    try:
+        with open("config.yaml", "r") as file:
+            return yaml.safe_load(file)
+    except FileNotFoundError:
+        st.error("Configuration file (config.yaml) not found!")
+        return None
 
-authenticator = stauth.Authenticate(
-    credentials,
-    "auth_cookie",
-    "auth_signature",
-    cookie_expiry_days=1
+config = load_config()
+if not config:
+    st.stop()
+
+# ----- Authentication -----
+authenticator = Authenticate(
+    config["credentials"],
+    config["cookie"]["name"],
+    config["cookie"]["key"],
+    config["cookie"]["expiry_days"]
 )
 
-authenticator.login('Login', 'sidebar')
+auth_status, username, name = authenticator.login("Login", "sidebar")
 
-if authenticator.authentication_status:
-    name = authenticator.name
-    username = authenticator.username
-    authenticator.logout('Logout', 'sidebar')
-
+if auth_status:
+    authenticator.logout("Logout", "sidebar")
+    
     # ----- Initialize File -----
-    DATA_FILE = "transactions.csv"
-    if not os.path.exists(DATA_FILE):
-        df_init = pd.DataFrame(columns=["Date", "Category", "Type", "Amount", "Notes"])
-        df_init.to_csv(DATA_FILE, index=False)
+    @st.cache_data
+    def initialize_data():
+        """Initialize the transactions CSV if it doesn't exist."""
+        if not os.path.exists(DATA_FILE):
+            df_init = pd.DataFrame(columns=["Date", "Category", "Type", "Amount", "Notes"])
+            df_init.to_csv(DATA_FILE, index=False)
+        return pd.read_csv(DATA_FILE, parse_dates=["Date"])
 
     # ----- Load Data -----
-    df = pd.read_csv(DATA_FILE, parse_dates=["Date"])
+    df = initialize_data()
 
-    # ----- Sidebar: Add Entry -----
-    st.sidebar.header("Add New Transaction")
-    with st.sidebar.form("entry_form", clear_on_submit=True):
-        date = st.date_input("Date", value=datetime.date.today())
-        category = st.text_input("Category (e.g. Groceries, Salary)")
-        t_type = st.selectbox("Type", ["Income", "Expense"])
-        amount = st.number_input("Amount", min_value=0.0, format="%.2f")
-        notes = st.text_area("Notes", height=50)
-        submitted = st.form_submit_button("Add Transaction")
+    # ----- Helper Functions -----
+    def validate_transaction(date, category, amount, t_type):
+        """Validate transaction input fields."""
+        if not category.strip():
+            st.error("Category cannot be empty.")
+            return False
+        if amount <= 0:
+            st.error("Amount must be greater than 0.")
+            return False
+        return True
 
-    if submitted:
+    def save_transaction(df, date, category, t_type, amount, notes):
+        """Save a new transaction to the CSV."""
         new_entry = pd.DataFrame({
             "Date": [date],
             "Category": [category],
@@ -64,15 +78,44 @@ if authenticator.authentication_status:
         df = pd.concat([df, new_entry], ignore_index=True)
         df.to_csv(DATA_FILE, index=False)
         st.success("Transaction added successfully!")
+        st.cache_data.clear()  # Clear cache after saving
+        return df
+
+    def delete_transaction(df, index):
+        """Delete a transaction by index."""
+        df = df.drop(index).reset_index(drop=True)
+        df.to_csv(DATA_FILE, index=False)
+        st.success("Transaction deleted successfully!")
+        st.cache_data.clear()  # Clear cache after deletion
+        return df
+
+    # ----- Sidebar: Add Transaction -----
+    st.sidebar.header("Add New Transaction")
+    with st.sidebar.form("entry_form", clear_on_submit=True):
+        date = st.date_input("Date", value=datetime.date.today())
+        category = st.selectbox("Category", CATEGORIES, index=len(CATEGORIES)-1)
+        t_type = st.selectbox("Type", ["Income", "Expense"])
+        amount = st.number_input("Amount", min_value=0.01, format="%.2f")
+        notes = st.text_area("Notes", height=50)
+        submitted = st.form_submit_button("Add Transaction")
+
+        if submitted and validate_transaction(date, category, amount, t_type):
+            df = save_transaction(df, date, category, t_type, amount, notes)
 
     # ----- Main Interface -----
     st.title("💰 Personal Accounts Dashboard")
 
-    # Filter section
+    # ----- Filter Section -----
     with st.expander("🔍 Filter by Date"):
-        start_date = st.date_input("Start Date", value=df["Date"].min() if not df.empty else datetime.date.today())
-        end_date = st.date_input("End Date", value=df["Date"].max() if not df.empty else datetime.date.today())
-        filtered_df = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
+        default_start = df["Date"].min() if not df.empty else datetime.date.today()
+        default_end = df["Date"].max() if not df.empty else datetime.date.today()
+        start_date = st.date_input("Start Date", value=default_start)
+        end_date = st.date_input("End Date", value=default_end)
+        if start_date > end_date:
+            st.error("Start date cannot be after end date.")
+            filtered_df = df
+        else:
+            filtered_df = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
     # ----- Summary -----
     income = filtered_df[filtered_df["Type"] == "Income"]["Amount"].sum()
@@ -82,7 +125,7 @@ if authenticator.authentication_status:
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Income", f"₹ {income:,.2f}")
     col2.metric("Total Expense", f"₹ {expense:,.2f}")
-    col3.metric("Net Balance", f"₹ {balance:,.2f}", delta=f"{income - expense:,.2f}")
+    col3.metric("Net Balance", f"₹ {balance:,.2f}", delta=f"{balance:,.2f}")
 
     # ----- Chart -----
     if not filtered_df.empty:
@@ -92,24 +135,42 @@ if authenticator.authentication_status:
         chart_summary = chart_data.groupby(["Month", "Type"])["Amount"].sum().reset_index()
 
         chart = alt.Chart(chart_summary).mark_bar().encode(
-            x="Month:N",
-            y="Amount:Q",
-            color="Type:N",
-            tooltip=["Month", "Type", "Amount"]
+            x=alt.X("Month:N", title="Month"),
+            y=alt.Y("Amount:Q", title="Amount (₹)"),
+            color=alt.Color("Type:N", legend=alt.Legend(title="Transaction Type")),
+            tooltip=["Month", "Type", alt.Tooltip("Amount", format=",.2f")]
         ).properties(width=700)
 
-        st.altair_chart(chart)
+        st.altair_chart(chart, use_container_width=True)
 
         # ----- Budget Tracking -----
-        st.subheader("📅 Monthly Budget Tracker (₹50,000)")
+        st.subheader(f"📅 Monthly Budget Tracker (₹{DEFAULT_BUDGET:,})")
         monthly_expense = chart_data[chart_data["Type"] == "Expense"].groupby("Month")["Amount"].sum()
         for month, spent in monthly_expense.items():
-            remaining = 50000 - spent
-            st.write(f"**{month}** - Spent: ₹{spent:,.0f} / Budget: ₹50,000 → Remaining: ₹{remaining:,.0f}")
+            remaining = DEFAULT_BUDGET - spent
+            progress = min(spent / DEFAULT_BUDGET, 1.0)
+            st.write(f"**{month}** - Spent: ₹{spent:,.0f} / Budget: ₹{DEFAULT_BUDGET:,}")
+            st.progress(progress)
+            st.write(f"Remaining: ₹{remaining:,.0f}")
 
-    # ----- View Table -----
+        # ----- Category Summary -----
+        st.subheader("📊 Category-wise Expenses")
+        category_summary = filtered_df[filtered_df["Type"] == "Expense"].groupby("Category")["Amount"].sum().reset_index()
+        st.dataframe(category_summary, use_container_width=True)
+
+    # ----- View and Manage Transactions -----
     st.subheader("📄 All Transactions")
-    st.dataframe(filtered_df.sort_values(by="Date", ascending=False), use_container_width=True)
+    if not filtered_df.empty:
+        st.dataframe(filtered_df.sort_values(by="Date", ascending=False), use_container_width=True)
+        
+        # Delete Transaction
+        with st.expander("🗑️ Delete Transaction"):
+            delete_index = st.number_input("Enter transaction index to delete", min_value=0, max_value=len(filtered_df)-1, step=1)
+            if st.button("Delete Transaction"):
+                if delete_index in filtered_df.index:
+                    df = delete_transaction(df, delete_index)
+                else:
+                    st.error("Invalid transaction index.")
 
     # ----- Export CSV -----
     st.download_button(
@@ -119,7 +180,7 @@ if authenticator.authentication_status:
         mime="text/csv"
     )
 
-elif authenticator.authentication_status is False:
+elif auth_status is False:
     st.error("Username/password is incorrect")
-elif authenticator.authentication_status is None:
+elif auth_status is None:
     st.warning("Please enter your username and password")
